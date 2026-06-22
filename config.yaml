@@ -1,0 +1,64 @@
+# 语音人机交互系统 - 配置文件
+
+# 服务器配置
+server:
+  host: "127.0.0.1"      # 监听地址
+  port: 5000             # 监听端口
+  debug: false           # 调试模式
+
+# 音频配置
+audio:
+  sample_rate: 16000     # 采样率 (Hz)
+  channels: 1            # 单声道
+  chunk_size: 1024       # 缓冲区大小
+  device_index: -1       # -1 表示默认设备
+
+# 语音识别配置 (ASR)
+asr:
+  model_name: "wav2vec2-chinese"
+  model_path: "./models/asr/wav2vec2-large-xlsr-53-chinese"
+  device: "cuda"         # 'cuda' 或 'cpu'
+  language: "zh-CN"
+  confidence_threshold: 0.5  # 置信度阈值
+
+# 语音合成配置 (TTS)
+tts:
+  engine: "edge-tts"     # 'edge-tts', 'pyttsx3', 或 'glow-tts'
+  voice: "zh-CN-XiaoxiuNeural"  # Edge TTS 中文声音
+  rate: 1.0              # 语速 (0.5-2.0)
+  volume: 1.0            # 音量 (0.0-1.0)
+
+# 命令配置
+commands:
+  timeout: 5             # 命令执行超时 (秒)
+  retry_count: 3         # 重试次数
+  retry_delay: 1         # 重试延迟 (秒)
+
+# Android设备配置
+android:
+  adb_host: "127.0.0.1"
+  adb_port: 5037
+  device_serial: "192.168.1.100:5555"  # USB设备留空或填写IP:端口
+  connection_timeout: 5
+
+# GUI配置
+gui:
+  window_width: 800
+  window_height: 600
+  theme: "default"       # 主题设置
+  font_size: 12
+  auto_scroll_log: true
+
+# 日志配置
+logging:
+  level: "INFO"          # DEBUG, INFO, WARNING, ERROR
+  log_file: "./logs/app.log"
+  max_file_size: 10485760  # 10MB
+  backup_count: 5
+
+# 性能配置
+performance:
+  use_gpu: true
+  gpu_memory_fraction: 0.5
+  max_audio_length: 30   # 最长录音时间 (秒)
+  recognition_delay: 0.5 # 识别处理延迟 (秒)
