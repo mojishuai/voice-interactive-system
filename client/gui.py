@@ -1,22 +1,48 @@
 """
-PyQt5 GUI模块 - 语音交互界面
+GUI模块 - 使用PyQt5构建图形界面
+支持实时录音、识别、合成、设备控制
 """
 
 import sys
-import numpy as np
+import threading
+from typing import Dict, Optional, Callable
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QLabel, QTextEdit, QStatusBar, QMessageBox
+    QPushButton, QLabel, QTextEdit, QProgressBar, QComboBox, QSpinBox
 )
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QObject, pyqtSlot
 from PyQt5.QtGui import QFont, QColor
+import logging
+import numpy as np
+
+logger = logging.getLogger(__name__)
+
+
+class GuiSignals(QObject):
+    """GUI信号发送器"""
+    update_log = pyqtSignal(str)
+    update_status = pyqtSignal(str)
+    update_progress = pyqtSignal(int)
+    recognition_done = pyqtSignal(str)
+    synthesis_done = pyqtSignal()
 
 
 class VoiceInteractionGUI(QMainWindow):
-    """语音交互GUI"""
+    """语音交互系统GUI"""
     
-    def __init__(self, audio_manager, asr, tts, cmd_parser, network, config):
-        """初始化GUI"""
+    def __init__(self, audio_manager=None, asr=None, tts=None, 
+                 cmd_parser=None, network=None, config=None):
+        """
+        初始化GUI
+        
+        Args:
+            audio_manager: 音频管理器
+            asr: 语音识别模型
+            tts: 语音合成模型
+            cmd_parser: 命令解析器
+            network: 网络客户端
+            config: 配置字典
+        """
         super().__init__()
         
         self.audio_manager = audio_manager
@@ -24,100 +50,106 @@ class VoiceInteractionGUI(QMainWindow):
         self.tts = tts
         self.cmd_parser = cmd_parser
         self.network = network
-        self.config = config
+        self.config = config or {}
         
         self.is_recording = False
-        self.audio_data = None
+        self.signals = GuiSignals()
         
-        self.init_ui()
-        self.setup_network()
+        self.initUI()
+        self.setup_connections()
+        
+        logger.info("GUI已初始化")
     
-    def init_ui(self):
+    def initUI(self):
         """初始化UI"""
-        self.setWindowTitle("语音人机交互系统")
-        self.setGeometry(100, 100, 800, 600)
+        # 主窗口
+        self.setWindowTitle("语音人機交互系统")
+        self.setGeometry(100, 100, 900, 700)
         
-        # 中央widget
+        # 中心窗口体
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         
         # 主布局
-        main_layout = QVBoxLayout(central_widget)
+        main_layout = QVBoxLayout()
         
         # 标题
-        title = QLabel("语音人机交互系统")
+        title_label = QLabel("语音人機交互系统")
         title_font = QFont()
-        title_font.setPointSize(16)
+        title_font.setPointSize(14)
         title_font.setBold(True)
-        title.setFont(title_font)
-        main_layout.addWidget(title)
+        title_label.setFont(title_font)
+        main_layout.addWidget(title_label)
         
-        # 状态显示
+        # 状态行
         status_layout = QHBoxLayout()
-        self.status_label = QLabel("状态: 就绪")
-        self.device_label = QLabel("设备: 未连接")
+        status_layout.addWidget(QLabel("是否连接:"))
+        self.status_label = QLabel("已断开")
+        self.status_label.setStyleSheet("color: red;")
         status_layout.addWidget(self.status_label)
-        status_layout.addWidget(self.device_label)
+        status_layout.addStretch()
         main_layout.addLayout(status_layout)
         
-        # 按钮布局
+        # 录音按銿
         button_layout = QHBoxLayout()
+        self.record_button = QPushButton("开始录音")
+        self.record_button.setStyleSheet("background-color: #4CAF50; color: white; font-size: 14px; padding: 10px;")
+        self.record_button.clicked.connect(self.toggle_recording)
+        button_layout.addWidget(self.record_button)
         
-        self.record_btn = QPushButton("开始录音 (Space)")
-        self.record_btn.setStyleSheet("background-color: #4CAF50; color: white; font-size: 14px;")
-        self.record_btn.clicked.connect(self.toggle_recording)
-        button_layout.addWidget(self.record_btn)
-        
-        self.clear_btn = QPushButton("清空")
-        self.clear_btn.clicked.connect(self.clear_output)
-        button_layout.addWidget(self.clear_btn)
+        self.clear_button = QPushButton("清空日志")
+        self.clear_button.clicked.connect(self.clear_log)
+        button_layout.addWidget(self.clear_button)
         
         main_layout.addLayout(button_layout)
         
-        # 输出文本框
-        output_label = QLabel("识别结果与执行反馈:")
-        main_layout.addWidget(output_label)
+        # 进度条
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setMaximum(100)
+        main_layout.addWidget(self.progress_bar)
         
-        self.output_text = QTextEdit()
-        self.output_text.setReadOnly(True)
-        self.output_text.setStyleSheet("background-color: #f5f5f5; font-family: 'Courier New';")
-        main_layout.addWidget(self.output_text)
+        # 日志业务
+        log_label = QLabel("事件日志:")
+        main_layout.addWidget(log_label)
         
-        # 命令列表
-        commands_label = QLabel("支持的命令:")
-        main_layout.addWidget(commands_label)
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setMaximumHeight(400)
+        main_layout.addWidget(self.log_text)
         
-        self.commands_text = QTextEdit()
-        self.commands_text.setReadOnly(True)
-        self.commands_text.setMaximumHeight(150)
-        self.commands_text.setStyleSheet("background-color: #f0f0f0;")
+        # 控制设备
+        control_label = QLabel("测试控制:")
+        main_layout.addWidget(control_label)
         
-        # 显示所有支持的命令
-        commands = self.cmd_parser.get_all_commands()
-        commands_str = ", ".join(commands)
-        self.commands_text.setText(commands_str)
-        main_layout.addWidget(self.commands_text)
+        control_layout = QHBoxLayout()
+        self.device_combo = QComboBox()
+        self.device_combo.addItems(["主PC"])
+        control_layout.addWidget(QLabel("设备:"))
+        control_layout.addWidget(self.device_combo)
         
-        # 状态栏
-        self.statusBar().showMessage("就绪")
+        test_button = QPushButton("测试语音合成")
+        test_button.clicked.connect(self.test_synthesis)
+        control_layout.addWidget(test_button)
         
-        # 设置快捷键
-        self.setFocusPolicy(Qt.StrongFocus)
+        main_layout.addLayout(control_layout)
+        
+        central_widget.setLayout(main_layout)
+        
+        # 信号连接
+        self.signals.update_log.connect(self.append_log)
+        self.signals.update_status.connect(self.update_status)
+        self.signals.update_progress.connect(self.progress_bar.setValue)
     
-    def setup_network(self):
-        """设置网络连接"""
-        def on_server_response(message):
-            self.update_output(f"[服务器] {message}")
-        
-        if self.network.connect(callback=on_server_response):
-            self.device_label.setText("设备: 已连接")
-            self.device_label.setStyleSheet("color: green;")
-        else:
-            self.device_label.setText("设备: 连接失败")
-            self.device_label.setStyleSheet("color: red;")
+    def setup_connections(self):
+        """设置信号连接"""
+        if self.network:
+            self.network.connect(self.on_network_message)
+            self.signals.update_status.emit("已连接服务器")
+            self.status_label.setText("已连接")
+            self.status_label.setStyleSheet("color: green;")
     
     def toggle_recording(self):
-        """切换录音"""
+        """开始/停止录音"""
         if not self.is_recording:
             self.start_recording()
         else:
@@ -125,124 +157,140 @@ class VoiceInteractionGUI(QMainWindow):
     
     def start_recording(self):
         """开始录音"""
-        self.is_recording = True
-        self.record_btn.setText("停止录音 (Space)")
-        self.record_btn.setStyleSheet("background-color: #f44336; color: white; font-size: 14px;")
-        self.status_label.setText("状态: 录音中...")
-        self.statusBar().showMessage("正在录音...")
-        
-        self.audio_manager.start_recording()
+        if self.audio_manager:
+            self.is_recording = True
+            self.record_button.setText("停止录音")
+            self.record_button.setStyleSheet("background-color: #f44336; color: white; font-size: 14px; padding: 10px;")
+            self.progress_bar.setValue(0)
+            
+            self.audio_manager.start_recording()
+            self.signals.update_log.emit("[*] 录音已开始")
     
     def stop_recording(self):
-        """停止录音"""
-        self.is_recording = False
-        self.record_btn.setText("开始录音 (Space)")
-        self.record_btn.setStyleSheet("background-color: #4CAF50; color: white; font-size: 14px;")
-        self.status_label.setText("状态: 处理中...")
-        self.statusBar().showMessage("处理音频...")
-        
-        # 获取音频数据
-        self.audio_data = self.audio_manager.stop_recording()
-        
-        # 处理音频
-        self.process_audio()
+        """停止录音并进行识别"""
+        if self.audio_manager and self.is_recording:
+            self.record_button.setText("处理中...")
+            self.record_button.setEnabled(False)
+            
+            # 在后台线程中处理
+            thread = threading.Thread(target=self._process_audio)
+            thread.daemon = True
+            thread.start()
     
-    def process_audio(self):
-        """处理音频"""
-        if len(self.audio_data) == 0:
-            self.update_output("[错误] 没有录入音频")
-            self.status_label.setText("状态: 就绪")
-            return
+    def _process_audio(self):
+        """处理音频数据"""
+        try:
+            audio_data = self.audio_manager.stop_recording()
+            self.is_recording = False
+            
+            if len(audio_data) > 0:
+                self.signals.update_log.emit(f"[*] 录音结束，驼棍数：{len(audio_data)}")
+                self.signals.update_progress.emit(30)
+                
+                # 识别音频
+                self.signals.update_log.emit("[*] 识别中...")
+                command, text, confidence = self.asr.recognize_command(audio_data) if self.asr else ("", "", 0)
+                
+                self.signals.update_log.emit(f"[✓] 识别结果: '{text}'")
+                self.signals.update_log.emit(f"   置信度: {confidence:.2%}")
+                self.signals.update_progress.emit(60)
+                
+                if command and command != "unknown":
+                    self.signals.update_log.emit(f"[✓] 筞別命令: {command}")
+                    
+                    # 解析命令
+                    if self.cmd_parser:
+                        cmd_info = self.cmd_parser.parse(command, text)
+                        if cmd_info:
+                            self.signals.update_log.emit(f"   执行器: {cmd_info.get('executor')}")
+                            self.signals.update_log.emit(f"   参数: {cmd_info.get('params')}")
+                            
+                            # 发送到服务器
+                            if self.network and self.network.is_connected:
+                                self.network.send_command({
+                                    'type': 'command',
+                                    'device_id': 'pc',
+                                    'executor': cmd_info.get('executor'),
+                                    'params': cmd_info.get('params')
+                                })
+                                self.signals.update_log.emit("[✓] 命令已发送")
+                    
+                    # 合成并播放相关识剽
+                    if self.tts:
+                        self.signals.update_log.emit("[*] 合成报读中...")
+                        response = f"已执行{command}操作"
+                        try:
+                            self.tts.synthesize_sync(response)
+                            self.signals.update_log.emit(f"[✓] 已播报: {response}")
+                        except Exception as e:
+                            self.signals.update_log.emit(f"[!] 合成失败: {e}")
+                
+                self.signals.update_progress.emit(100)
+            else:
+                self.signals.update_log.emit("[!] 未收录音数据")
         
-        # 语音识别
-        self.update_output("[识别中...] 处理音频...")
-        asr_result = self.asr.recognize(self.audio_data)
+        except Exception as e:
+            self.signals.update_log.emit(f"[!] 处理失败: {e}")
         
-        if not asr_result['success']:
-            self.update_output(f"[识别失败] {asr_result['error']}")
-            self.status_label.setText("状态: 识别失败")
-            return
-        
-        text = asr_result['text']
-        confidence = asr_result['confidence']
-        
-        self.update_output(f"[识别结果] {text}")
-        self.update_output(f"[置信度] {confidence:.2%}")
-        
-        # 命令解析
-        self.update_output("[解析中...] 解析命令...")
-        cmd_result = self.cmd_parser.parse(text)
-        
-        if not cmd_result['success']:
-            feedback = f"[解析失败] {cmd_result['error']}"
-            self.update_output(feedback)
-            # 播放反馈语音
-            audio = self.tts.synthesize(cmd_result['error'])
-            if len(audio) > 0:
-                self.audio_manager.play_audio(audio)
-            self.status_label.setText("状态: 解析失败")
-            return
-        
-        self.update_output(f"[命令] {cmd_result['desc']}")
-        
-        # 执行命令
-        self.update_output("[执行中...] 向服务器发送命令...")
-        self.network.send_command({
-            'type': cmd_result['type'],
-            'package': cmd_result['command'].get('package') if isinstance(cmd_result['command'], dict) else None,
-            'activity': cmd_result['command'].get('activity') if isinstance(cmd_result['command'], dict) else None,
-            'command': cmd_result['command'] if isinstance(cmd_result['command'], str) else None
-        })
-        
-        # 合成反馈语音
-        feedback = f"已执行: {cmd_result['desc']}"
-        self.update_output(f"[反馈] {feedback}")
-        
-        audio = self.tts.synthesize(feedback)
-        if len(audio) > 0:
-            self.audio_manager.play_audio(audio)
-        
-        self.status_label.setText("状态: 执行完成")
-        self.statusBar().showMessage("就绪")
+        finally:
+            self.record_button.setText("开始录音")
+            self.record_button.setStyleSheet("background-color: #4CAF50; color: white; font-size: 14px; padding: 10px;")
+            self.record_button.setEnabled(True)
     
-    def update_output(self, text: str):
-        """更新输出"""
-        self.output_text.append(text)
-        # 自动滚动到底部
-        self.output_text.verticalScrollBar().setValue(
-            self.output_text.verticalScrollBar().maximum()
-        )
+    def test_synthesis(self):
+        """测试语音合成"""
+        if self.tts:
+            thread = threading.Thread(target=self._test_synthesis_thread)
+            thread.daemon = True
+            thread.start()
     
-    def clear_output(self):
-        """清空输出"""
-        self.output_text.clear()
+    def _test_synthesis_thread(self):
+        """测试合成线程"""
+        try:
+            self.signals.update_log.emit("[*] 正在测试语音合成...")
+            self.tts.synthesize_sync("语音人機交互系统正常工作")
+            self.signals.update_log.emit("[✓] 合成测试完成")
+        except Exception as e:
+            self.signals.update_log.emit(f"[!] 合成失败: {e}")
     
-    def keyPressEvent(self, event):
-        """处理键盘事件"""
-        if event.key() == Qt.Key_Space and not event.isAutoRepeat():
-            self.toggle_recording()
-            event.accept()
-        else:
-            super().keyPressEvent(event)
+    def on_network_message(self, message: Dict):
+        """接收网络消息"""
+        msg_type = message.get('type')
+        if msg_type == 'command_response':
+            if message.get('success'):
+                self.signals.update_log.emit(f"[✓] 操作成功: {message.get('executor')}")
+            else:
+                self.signals.update_log.emit(f"[!] 操作失败: {message.get('executor')}")
+    
+    @pyqtSlot(str)
+    def append_log(self, text: str):
+        """添加日志"""
+        self.log_text.append(text)
+        # 自动滚到下方
+        if self.config.get('gui', {}).get('auto_scroll_log', True):
+            self.log_text.verticalScrollBar().setValue(
+                self.log_text.verticalScrollBar().maximum()
+            )
+    
+    @pyqtSlot(str)
+    def update_status(self, status: str):
+        """更新状态"""
+        logger.info(f"GUI状态: {status}")
+    
+    def clear_log(self):
+        """清空日志"""
+        self.log_text.clear()
+        self.progress_bar.setValue(0)
     
     def closeEvent(self, event):
-        """关闭事件"""
-        reply = QMessageBox.question(
-            self,
-            '确认',
-            '确定要退出吗?',
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
-        )
-        
-        if reply == QMessageBox.Yes:
-            self.audio_manager.cleanup()
+        """窗口关闭event"""
+        if self.audio_manager:
+            self.audio_manager.close()
+        if self.network and self.network.is_connected:
             self.network.disconnect()
-            event.accept()
-        else:
-            event.ignore()
+        event.accept()
     
     def run(self):
         """运行GUI"""
         self.show()
-        sys.exit(QApplication.instance().exec_())
+        sys.exit(QApplication.exec_())

@@ -1,3 +1,5 @@
+# .gitignore
+
 # Python
 __pycache__/
 *.py[cod]
@@ -16,19 +18,17 @@ parts/
 sdist/
 var/
 wheels/
-pip-wheel-metadata/
-share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-PIPFILE.lock
 
-# Models
+# Models and data
 models/asr/
 models/tts/
 *.pt
 *.pth
-*.onnx
+*.wav
+*.mp3
 
 # Logs
 logs/
@@ -42,11 +42,11 @@ logs/
 *~
 .DS_Store
 
-# Audio files
-*.wav
-*.mp3
-*.m4a
+# Config files
+config.local.yaml
+.env
 
-# Screenshots
-screenshots/
-*.png
+# Temporary files
+*.tmp
+temp_output.wav
+screenshot.png
