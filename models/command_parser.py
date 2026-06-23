@@ -1,235 +1,310 @@
 """
 命令解析模块 - 将识别的文本转换为可执行的命令
+支持命令映射、参数提取、命令优先级
 """
 
-from typing import Dict, Tuple, List
 import re
+from typing import Dict, List, Tuple, Any, Optional
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class CommandParser:
     """命令解析器"""
     
-    # 定义支持的命令映射
+    # 命令映射表：命令名 -> {执行器, 参数, 描述}
     COMMAND_MAP = {
-        # QQ和社交应用
-        "打开QQ": {
-            "package": "com.tencent.mobileqq",
-            "activity": ".SplashActivity",
-            "desc": "打开QQ应用"
+        # 光照控制
+        "开灯": {
+            "executor": "light_on",
+            "params": {"room": "all", "brightness": 100},
+            "description": "打开所有灯光",
+            "priority": 10
         },
-        "打开微信": {
-            "package": "com.tencent.mm",
-            "activity": ".ui.LauncherUI",
-            "desc": "打开微信应用"
-        },
-        "打开钉钉": {
-            "package": "com.alibaba.android.gtalking",
-            "activity": ".DingTalkLauncherUI",
-            "desc": "打开钉钉应用"
+        "关灯": {
+            "executor": "light_off",
+            "params": {"room": "all"},
+            "description": "关闭所有灯光",
+            "priority": 10
         },
         
-        # 媒体应用
-        "打开相机": {
-            "package": "com.android.camera",
-            "activity": ".Camera",
-            "desc": "打开相机应用"
-        },
-        "打开相册": {
-            "package": "com.android.gallery3d",
-            "activity": ".Gallery",
-            "desc": "打开相册应用"
-        },
-        "打开音乐": {
-            "package": "com.netease.cloudmusic",
-            "activity": ".MainActivity",
-            "desc": "打开网易云音乐"
-        },
-        
-        # 浏览器
+        # 浏览器控制
         "打开浏览器": {
-            "package": "com.android.chrome",
-            "activity": "com.google.android.apps.chrome.Main",
-            "desc": "打开Chrome浏览器"
+            "executor": "open_browser",
+            "params": {"url": ""},
+            "description": "打开网络浏览器",
+            "priority": 5
+        },
+        "关闭浏览器": {
+            "executor": "close_browser",
+            "params": {},
+            "description": "关闭网络浏览器",
+            "priority": 5
         },
         
-        # 系统控制命令
-        "锁屏": {
-            "command": "input keyevent 26",
-            "desc": "锁定屏幕"
-        },
-        "返回": {
-            "command": "input keyevent 4",
-            "desc": "点击返回按钮"
-        },
-        "主页": {
-            "command": "input keyevent 3",
-            "desc": "返回主页"
-        },
-        "截屏": {
-            "command": "input keyevent 120",
-            "desc": "截屏"
-        },
-        "音量增加": {
-            "command": "input keyevent 24",
-            "desc": "增加音量"
-        },
-        "音量减少": {
-            "command": "input keyevent 25",
-            "desc": "减少音量"
-        },
-        
-        # 拍照
-        "拍照": {
-            "command": "input keyevent 27",
-            "desc": "拍照"
-        },
-        
-        # 电源控制
-        "关闭屏幕": {
-            "command": "shell input keyevent 26",
-            "desc": "关闭屏幕"
-        },
-        
-        # 文件管理
-        "打开文件管理器": {
-            "package": "com.android.documentsui",
-            "activity": ".DocumentsActivity",
-            "desc": "打开文件管理器"
-        },
-        
-        # 计算器
+        # 应用程序控制
         "打开计算器": {
-            "package": "com.android.calculator2",
-            "activity": ".Calculator",
-            "desc": "打开计算器"
+            "executor": "open_app",
+            "params": {"app": "calculator"},
+            "description": "打开计算器应用",
+            "priority": 5
+        },
+        "打开记事本": {
+            "executor": "open_app",
+            "params": {"app": "notepad"},
+            "description": "打开记事本应用",
+            "priority": 5
+        },
+        "打开文件管理器": {
+            "executor": "open_app",
+            "params": {"app": "file_manager"},
+            "description": "打开文件管理器",
+            "priority": 5
         },
         
-        # 设置
-        "打开设置": {
-            "package": "com.android.settings",
-            "activity": ".Settings",
-            "desc": "打开系统设置"
+        # 系统控制
+        "截屏": {
+            "executor": "screenshot",
+            "params": {},
+            "description": "截屏保存",
+            "priority": 5
         },
         
-        # 短信
-        "打开短信": {
-            "package": "com.android.mms",
-            "activity": ".ui.ConversationList",
-            "desc": "打开短信应用"
+        # 音量控制
+        "调高音量": {
+            "executor": "volume_up",
+            "params": {"step": 5},
+            "description": "提高音量",
+            "priority": 8
+        },
+        "调低音量": {
+            "executor": "volume_down",
+            "params": {"step": 5},
+            "description": "降低音量",
+            "priority": 8
+        },
+        "静音": {
+            "executor": "mute",
+            "params": {},
+            "description": "静音",
+            "priority": 8
         },
         
-        # 邮件
-        "打开邮件": {
-            "package": "com.android.email",
-            "activity": ".activity.MessageList",
-            "desc": "打开邮件应用"
+        # 媒体控制
+        "打开音乐": {
+            "executor": "play_media",
+            "params": {"type": "music"},
+            "description": "打开音乐播放器",
+            "priority": 5
+        },
+        "停止播放": {
+            "executor": "media_pause",
+            "params": {},
+            "description": "暂停媒体播放",
+            "priority": 8
+        },
+        "下一首": {
+            "executor": "media_next",
+            "params": {},
+            "description": "播放下一个",
+            "priority": 8
+        },
+        "上一首": {
+            "executor": "media_previous",
+            "params": {},
+            "description": "播放上一个",
+            "priority": 8
         },
         
-        # 地图
-        "打开地图": {
-            "package": "com.baidu.BaiduMap",
-            "activity": ".BaiduMapActivity",
-            "desc": "打开百度地图"
+        "打开视频": {
+            "executor": "play_media",
+            "params": {"type": "video"},
+            "description": "打开视频播放器",
+            "priority": 5
+        },
+        "全屏": {
+            "executor": "fullscreen",
+            "params": {"mode": "on"},
+            "description": "进入全屏模式",
+            "priority": 5
+        },
+        "退出全屏": {
+            "executor": "fullscreen",
+            "params": {"mode": "off"},
+            "description": "退出全屏模式",
+            "priority": 5
         },
         
-        # 支付应用
-        "打开支付宝": {
-            "package": "com.eg.android.AlipayGphone",
-            "activity": ".AlipayLogin",
-            "desc": "打开支付宝"
+        # 系统操作
+        "系统关机": {
+            "executor": "system_shutdown",
+            "params": {"delay": 0},
+            "description": "关闭系统",
+            "priority": 1
         },
-        
-        # 视频应用
-        "打开抖音": {
-            "package": "com.ss.android.ugc.aweme",
-            "activity": ".splash.SplashActivity",
-            "desc": "打开抖音"
+        "系统重启": {
+            "executor": "system_reboot",
+            "params": {"delay": 0},
+            "description": "重启系统",
+            "priority": 1
         },
     }
     
     def __init__(self):
         """初始化命令解析器"""
-        self.command_count = len(self.COMMAND_MAP)
-        print(f"[✓] 命令解析器初始化成功，支持{self.command_count}个命令")
+        logger.info(f"命令解析器初始化，支持 {len(self.COMMAND_MAP)} 个命令")
     
-    def parse(self, text: str) -> Dict:
+    def parse(self, command_name: str, recognized_text: str = "") -> Optional[Dict[str, Any]]:
         """
-        解析文本为命令
+        解析命令
         
         Args:
+            command_name: 识别的命令名称
+            recognized_text: 完整的识别文本（用于提取参数）
+            
+        Returns:
+            解析结果字典，包含 executor, params, description 等
+        """
+        if command_name not in self.COMMAND_MAP:
+            logger.warning(f"未知命令: {command_name}")
+            return None
+        
+        command_info = self.COMMAND_MAP[command_name].copy()
+        
+        # 尝试从识别文本中提取额外参数
+        extracted_params = self._extract_parameters(command_name, recognized_text)
+        command_info["params"].update(extracted_params)
+        
+        logger.info(f"命令已解析: {command_name} -> {command_info['executor']}")
+        logger.debug(f"参数: {command_info['params']}")
+        
+        return command_info
+    
+    def _extract_parameters(self, command_name: str, text: str) -> Dict[str, Any]:
+        """
+        从文本中提取命令参数
+        
+        Args:
+            command_name: 命令名称
             text: 识别的文本
             
         Returns:
-            命令字典，包含命令类型和参数
+            提取的参数字典
         """
-        if not text or not isinstance(text, str):
-            return self._error_result("输入文本无效")
+        params = {}
         
-        # 清理文本
-        text = text.strip()
+        # 提取URL（用于浏览器打开）
+        if command_name == "打开浏览器":
+            urls = re.findall(r'https?://[^\s]+', text)
+            if urls:
+                params['url'] = urls[0]
         
-        # 完全匹配
-        if text in self.COMMAND_MAP:
-            return self._make_result(self.COMMAND_MAP[text])
+        # 提取亮度值
+        if "灯" in command_name:
+            brightness_match = re.search(r'(\d+)%|(\d+)亮度', text)
+            if brightness_match:
+                brightness = int(brightness_match.group(1) or brightness_match.group(2))
+                params['brightness'] = min(100, max(0, brightness))
         
-        # 模糊匹配（包含关键词）
-        for cmd, info in self.COMMAND_MAP.items():
-            if self._fuzzy_match(text, cmd):
-                return self._make_result(info)
+        # 提取房间名称
+        rooms = ['卧室', '客厅', '厨房', '卫生间', '书房']
+        for room in rooms:
+            if room in text:
+                params['room'] = room
+                break
         
-        return self._error_result(f"无法识别命令: {text}")
+        # 提取数字参数
+        numbers = re.findall(r'\d+', text)
+        if numbers and command_name in ["调高音量", "调低音量"]:
+            params['step'] = int(numbers[0])
+        
+        return params
     
-    def _fuzzy_match(self, text: str, pattern: str) -> bool:
-        """模糊匹配"""
-        # 检查是否包含主要关键词
-        keywords = pattern.split()
-        return all(kw in text for kw in keywords)
-    
-    def _make_result(self, command_info: Dict) -> Dict:
-        """构造命令结果"""
-        result = {
-            "success": True,
-            "type": None,
-            "command": None,
-            "desc": command_info.get("desc", ""),
-            "error": None
-        }
-        
-        if "package" in command_info:
-            result["type"] = "launch_app"
-            result["command"] = {
-                "package": command_info["package"],
-                "activity": command_info["activity"]
-            }
-        elif "command" in command_info:
-            result["type"] = "shell_command"
-            result["command"] = command_info["command"]
-        
-        return result
-    
-    def _error_result(self, error: str) -> Dict:
-        """错误结果"""
-        return {
-            "success": False,
-            "type": None,
-            "command": None,
-            "desc": "",
-            "error": error
-        }
-    
-    def get_all_commands(self) -> List[str]:
+    def get_all_commands(self) -> Dict[str, Dict[str, Any]]:
         """获取所有支持的命令"""
-        return list(self.COMMAND_MAP.keys())
+        return self.COMMAND_MAP
     
-    def add_command(self, text: str, command_info: Dict):
-        """动态添加命令"""
-        self.COMMAND_MAP[text] = command_info
-        self.command_count += 1
-        print(f"[+] 添加新命令: {text}")
+    def get_command_by_priority(self) -> List[Tuple[str, int]]:
+        """
+        按优先级排序的命令列表
+        
+        Returns:
+            [(命令名, 优先级), ...] 按优先级降序排列
+        """
+        commands = [
+            (name, info.get('priority', 0))
+            for name, info in self.COMMAND_MAP.items()
+        ]
+        commands.sort(key=lambda x: x[1], reverse=True)
+        return commands
     
-    def remove_command(self, text: str):
-        """删除命令"""
-        if text in self.COMMAND_MAP:
-            del self.COMMAND_MAP[text]
-            self.command_count -= 1
-            print(f"[-] 删除命令: {text}")
+    def is_critical_command(self, command_name: str) -> bool:
+        """
+        判断是否为关键命令（需要二次确认）
+        
+        Args:
+            command_name: 命令名称
+            
+        Returns:
+            是否为关键命令
+        """
+        if command_name in self.COMMAND_MAP:
+            priority = self.COMMAND_MAP[command_name].get('priority', 5)
+            return priority < 3  # 优先级 < 3 视为关键命令
+        return False
+    
+    def add_custom_command(self, command_name: str, executor: str, 
+                          params: Dict[str, Any] = None, 
+                          description: str = "", priority: int = 5):
+        """
+        添加自定义命令
+        
+        Args:
+            command_name: 命令名称
+            executor: 执行器名称
+            params: 默认参数
+            description: 命令描述
+            priority: 优先级（1-10）
+        """
+        if params is None:
+            params = {}
+        
+        self.COMMAND_MAP[command_name] = {
+            "executor": executor,
+            "params": params,
+            "description": description,
+            "priority": priority
+        }
+        logger.info(f"添加自定义命令: {command_name}")
+    
+    def get_command_suggestions(self, partial_text: str) -> List[str]:
+        """
+        根据部分文本获取命令建议
+        
+        Args:
+            partial_text: 部分文本
+            
+        Returns:
+            建议的命令列表
+        """
+        suggestions = []
+        partial_lower = partial_text.lower()
+        
+        for command_name in self.COMMAND_MAP.keys():
+            if partial_lower in command_name.lower():
+                suggestions.append(command_name)
+        
+        return suggestions[:5]  # 返回前5个建议
+    
+    def validate_command(self, command_name: str) -> bool:
+        """
+        验证命令是否有效
+        
+        Args:
+            command_name: 命令名称
+            
+        Returns:
+            是否有效
+        """
+        return command_name in self.COMMAND_MAP
